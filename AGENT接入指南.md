@@ -19,6 +19,45 @@
 
 ---
 
+## 0. 网页聊天窗口（浏览器直接用，推荐）
+
+**不用装任何软件**——打开 `https://xxxx.trycloudflare.com`（Cell 6 给你的地址，去掉 `/v1`），就是一个带**模型下拉框**的聊天窗口，跟原版 llama-ui 一样：顶部下拉框选 `qwen3.6-35b-a3b` 或 `deepseek-v4-pro-9b`，输入消息回车即可对话，切模型不用改网址。
+
+> 这是 v2 新增的内置界面。如果你的地址打开还是一段 JSON，说明运行的是旧版网关——用下面「热更新」或重新 Run All 一次即可。
+
+### 热更新（当前服务立即生效，不换 URL、不用重跑全部）
+
+在 Kaggle notebook **最底部新增一个代码单元格**，粘贴下面代码并运行，10 秒后刷新浏览器即可看到聊天窗口：
+
+```python
+# 热更新：给正在跑的服务加网页聊天窗口（URL 不变、不重跑 notebook）
+import urllib.request, json, ast, os, subprocess, time
+RAW = "https://raw.githubusercontent.com/piost/kaggle-llm-server/main/2_run_server.ipynb"
+nb = json.loads(urllib.request.urlopen(RAW, timeout=30).read())
+cell = ''.join(nb['cells'][10]['source'])
+tree = ast.parse(cell)
+GATEWAY_SRC = next(
+    ast.literal_eval(n.value) for n in ast.walk(tree)
+    if isinstance(n, ast.Assign)
+    and any(isinstance(t, ast.Name) and t.id == 'GATEWAY_SRC' for t in n.targets)
+)
+open('/kaggle/working/model_gateway.py', 'w').write(GATEWAY_SRC)
+os.environ['MODEL_CONFIGS'] = json.dumps(MODEL_CONFIGS, ensure_ascii=False)
+os.environ.update(DEFAULT_MODEL=DEFAULT_MODEL, GATEWAY_PORT=str(PORT),
+                  BACKEND_PORT=str(BACKEND_PORT), LLAMA_SERVER=str(LLAMA_SERVER))
+subprocess.run(['pkill', '-f', 'model_gateway.py'], capture_output=True)
+time.sleep(2)
+subprocess.Popen(['python', '/kaggle/working/model_gateway.py'],
+                 stdout=open('/tmp/gateway.log', 'w'), stderr=subprocess.STDOUT,
+                 env={**os.environ}, start_new_session=True)
+time.sleep(4)
+import requests as _rq
+print(_rq.get(f'http://localhost:{PORT}/health', timeout=5).json())
+print('完成：刷新浏览器打开原来的 URL，就是聊天窗口了')
+```
+
+---
+
 ## 1. OpenAI Codex CLI
 
 ```bash
@@ -159,6 +198,14 @@ python chat.py --url https://xxxx.trycloudflare.com --list-models
 ### 想要真正 7×24 + 固定 URL
 
 Kaggle 免费版做不到（12h 硬上限 + 动态 URL + 周配额）。正经方案是付费云 GPU 常驻，或本地常驻机器 + Cloudflare 固定隧道（Named Tunnel）。免费阶段的用法就是"用完再启"，接受 URL 会变。
+
+### 每次重新启动的 30 秒小抄
+
+1. **开**：打开 `2_run_server.ipynb` → Run All → 等 Cell 6 打印出新的 `https://xxxx.trycloudflare.com`，复制它。
+2. **用**：浏览器打开这个地址（去掉 `/v1`）→ 就是带下拉框的聊天窗口；或在 Chatbox 设置里把「API 主机」换成新地址。模型名不用动。
+3. **关**：用完直接在 Kaggle 菜单 **File → Close and Shut Down Notebook**（省 GPU 配额），下次从步骤 1 重来。
+
+> 数据集和二进制都已存好，重开只需几分钟，不用重新下载/编译。
 
 ---
 
