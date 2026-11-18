@@ -41,71 +41,127 @@ WEB_UI = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kaggle LLM</title>
 <style>
+:root{--bg:#ffffff;--panel:#fbfbfb;--border:#e8e8e8;--text:#1f1f1f;--muted:#9a9a9a;--bubble:#f4f4f4;--accent:#1a1a1a}
 *{box-sizing:border-box}
-body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f7f7f8;color:#111}
-#top{padding:10px 16px;border-bottom:1px solid #e5e5e7;background:#fff;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:2}
-#top b{font-size:16px}
-select{padding:6px 10px;font-size:14px;border:1px solid #d0d0d4;border-radius:8px;background:#fff}
-#stat{font-size:12px;color:#888;margin-left:auto}
-#chat{max-width:760px;margin:18px auto 90px;padding:0 16px}
-.msg{margin:14px 0;line-height:1.7;white-space:pre-wrap;word-break:break-word}
-.msg u{display:block;font-size:12px;color:#999;text-decoration:none;margin-bottom:4px}
-.msg.user{text-align:right}
-.msg.user>div{display:inline-block;background:#3b82f6;color:#fff;padding:10px 14px;border-radius:14px;text-align:left}
-.msg.ai>div{display:inline-block;background:#fff;border:1px solid #e5e5e7;padding:10px 14px;border-radius:14px}
-#bar{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #e5e5e7;padding:12px 16px;display:flex;gap:10px;justify-content:center}
-#in{width:min(680px,88vw);padding:11px 14px;border:1px solid #d0d0d4;border-radius:10px;font-size:14px;font-family:inherit;outline:none}
-#in:focus{border-color:#3b82f6}
-button{padding:0 20px;border:0;background:#3b82f6;color:#fff;border-radius:10px;cursor:pointer;font-size:14px}
-button:disabled{background:#9dbcf5;cursor:not-allowed}
-#hint{font-size:12px;color:#999;text-align:center;margin-top:8px}
+html,body{height:100%}
+body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(--text);background:var(--bg);display:flex;font-size:14px}
+#side{width:58px;flex:0 0 58px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:8px}
+#side .logo{width:34px;height:34px;border-radius:10px;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;margin-bottom:8px}
+#side .ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#666;font-size:19px;user-select:none}
+#side .ico:hover{background:#efefef}
+#side .spacer{flex:1}
+#main{flex:1;display:flex;flex-direction:column;height:100vh;position:relative;min-width:0}
+#wrap{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center}
+#welcome{margin:auto;text-align:center;padding:24px}
+#welcome h1{font-size:30px;font-weight:600;margin:0 0 10px;letter-spacing:-.4px}
+#welcome p{color:var(--muted);margin:0;font-size:15px}
+#msgs{width:min(760px,92%);display:none;flex-direction:column;gap:24px;padding:30px 0 168px}
+.msg{line-height:1.72;white-space:pre-wrap;word-break:break-word}
+.msg .who{font-size:12px;color:var(--muted);margin-bottom:6px}
+.msg.user{align-self:flex-end;max-width:82%;background:var(--bubble);padding:10px 16px;border-radius:18px}
+.msg.user .who{display:none}
+.msg.ai{align-self:flex-start;max-width:100%}
+#composer{position:absolute;left:0;right:0;bottom:0;padding:0 20px 20px;display:flex;justify-content:center;pointer-events:none}
+#box{pointer-events:auto;width:min(760px,92%);background:#fff;border:1px solid #dcdcdc;border-radius:26px;box-shadow:0 6px 26px rgba(0,0,0,.07);padding:14px 14px 9px}
+#box textarea{width:100%;border:0;outline:0;resize:none;font:inherit;font-size:15px;line-height:1.5;max-height:160px;min-height:28px;padding:2px 6px;background:transparent;color:var(--text)}
+#row{display:flex;align-items:center;gap:8px;margin-top:6px}
+.iconbtn{width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#555}
+#modelBtn{margin-left:auto;display:flex;align-items:center;gap:7px;border:1px solid var(--border);background:#fafafa;border-radius:18px;padding:6px 12px;cursor:pointer;font-size:13px;color:#333}
+#modelBtn .dot{width:7px;height:7px;border-radius:50%;background:#22a06b}
+#send{width:34px;height:34px;border-radius:50%;border:0;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px}
+#send:disabled{opacity:.45;cursor:not-allowed}
+#menu{position:absolute;bottom:70px;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.14);padding:6px;min-width:250px;display:none;z-index:5}
+#menu div{padding:10px 12px;border-radius:9px;cursor:pointer;font-size:14px}
+#menu div:hover{background:#f2f2f2}
+#menu div.on{background:#1a1a1a;color:#fff}
+#hint{font-size:11px;color:#b5b5b5;text-align:center;margin-top:7px}
 </style>
 </head>
 <body>
-<div id="top"><b>🤖 Kaggle LLM</b><select id="model"></select><span id="stat"></span></div>
-<div id="chat"><div class="msg ai"><u>系统</u><div>选择模型后开始对话。首次切换模型需等待加载 10 秒~2 分钟。</div></div></div>
-<div id="bar">
-  <input id="in" placeholder="输入消息，按 Enter 发送">
-  <button id="go">发送</button>
+<div id="side">
+  <div class="logo" title="Kaggle LLM">K</div>
+  <div class="ico" id="newChat" title="新对话">＋</div>
+  <div class="ico" id="actModel" title="模型">◈</div>
+  <div class="spacer"></div>
+  <div class="ico" title="设置">⚙</div>
 </div>
-<div id="hint">模型切换不用改网址，用上面的下拉框即可</div>
+<div id="main">
+  <div id="wrap">
+    <div id="welcome">
+      <h1>Hello there</h1>
+      <p>Type a message or upload files to get started</p>
+    </div>
+    <div id="msgs"></div>
+  </div>
+  <div id="menu"></div>
+  <div id="composer">
+    <div id="box">
+      <textarea id="in" rows="1" placeholder="Type a message..."></textarea>
+      <div id="row">
+        <button class="iconbtn" id="plus" title="上传文件（暂未开放）">＋</button>
+        <button id="modelBtn"><span class="dot"></span><span id="modelLabel">加载中…</span><span style="color:#999">▾</span></button>
+        <button id="send" title="发送">➤</button>
+      </div>
+      <div id="hint">点输入框右下角模型标签切换模型，不用改网址</div>
+    </div>
+  </div>
+</div>
 <script>
 const $=s=>document.querySelector(s);
-let hist=[];
+let hist=[], current='', busy=false;
+function scroll(){const w=$('#wrap');w.scrollTop=w.scrollHeight}
+function setModel(m){
+  current=m;
+  $('#modelLabel').textContent=m.replace(/^.*?:/,'');
+  document.querySelectorAll('#menu div').forEach(d=>d.classList.toggle('on',d.dataset.id===m));
+}
+function reset(){hist=[];$('#msgs').innerHTML='';$('#msgs').style.display='none';$('#welcome').style.display='block';$('#menu').style.display='none'}
 async function loadModels(){
   try{
     const j=await (await fetch('/v1/models')).json();
-    const s=$('#model');s.innerHTML='';
-    (j.data||[]).forEach(m=>{const o=document.createElement('option');o.value=m.id;o.textContent=m.id;s.appendChild(o)});
-    $('#stat').textContent='● 在线';
-  }catch(e){$('#stat').textContent='○ 未就绪'}
+    const menu=$('#menu');menu.innerHTML='';
+    (j.data||[]).forEach(m=>{
+      const d=document.createElement('div');d.dataset.id=m.id;d.textContent=m.id;
+      d.onclick=()=>{setModel(m.id);reset()};
+      menu.appendChild(d);
+    });
+    setModel((j.data[0]||{}).id||'');
+  }catch(e){$('#modelLabel').textContent='未就绪'}
 }
-function add(who,text){
+function addMsg(who,text){
+  $('#welcome').style.display='none';
+  const box=$('#msgs');box.style.display='flex';
   const d=document.createElement('div');d.className='msg '+who;
-  const u=document.createElement('u');u.textContent=who==='user'?'你':$('#model').value;
-  const box=document.createElement('div');box.textContent=text;
-  d.appendChild(u);d.appendChild(box);$('#chat').appendChild(d);
-  window.scrollTo(0,document.body.scrollHeight);
-  return box;
+  const w=document.createElement('div');w.className='who';w.textContent=who==='user'?'You':current;
+  const t=document.createElement('div');t.textContent=text;
+  d.appendChild(w);d.appendChild(t);box.appendChild(d);scroll();
+  return t;
 }
 async function send(){
-  const t=$('#in').value.trim();if(!t)return;
-  $('#in').value='';add('user',t);hist.push({role:'user',content:t});
-  const out=add('ai','思考中…（首次加载模型可能要 1-2 分钟）');
-  $('#go').disabled=true;
+  if(busy)return;
+  const v=$('#in').value.trim();if(!v)return;
+  $('#in').value='';$('#in').style.height='auto';
+  addMsg('user',v);hist.push({role:'user',content:v});
+  const out=addMsg('ai','思考中…（首次加载模型可能要 1~2 分钟）');
+  busy=true;$('#send').disabled=true;
   try{
-    const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:$('#model').value,messages:hist})});
+    const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:current,messages:hist})});
     const j=await r.json();
     if(j.error)throw new Error(j.error.message);
     const a=j.choices[0].message.content;
     out.textContent=a;hist.push({role:'assistant',content:a});
   }catch(e){out.textContent='❌ '+e.message}
-  $('#go').disabled=false;window.scrollTo(0,document.body.scrollHeight);
+  busy=false;$('#send').disabled=false;scroll();
 }
-$('#go').onclick=send;
-$('#in').onkeydown=e=>{if(e.key==='Enter')send()};
-$('#model').onchange=()=>{hist=[];$('#chat').innerHTML='';add('ai','已切换到 '+$('#model').value)};
+$('#send').onclick=send;
+$('#in').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}};
+$('#in').oninput=()=>{$('#in').style.height='auto';$('#in').style.height=Math.min($('#in').scrollHeight,160)+'px'};
+function toggleMenu(){const m=$('#menu');m.style.display=m.style.display==='block'?'none':'block'}
+$('#modelBtn').onclick=e=>{e.stopPropagation();toggleMenu()};
+$('#actModel').onclick=e=>{e.stopPropagation();toggleMenu()};
+document.addEventListener('click',e=>{if(!e.target.closest('#menu')&&!e.target.closest('#modelBtn')&&!e.target.closest('#actModel')) $('#menu').style.display='none'});
+$('#newChat').onclick=reset;
+$('#plus').onclick=()=>alert('文件上传暂未开放，请先输入文字消息。');
 loadModels();
 </script>
 </body>
