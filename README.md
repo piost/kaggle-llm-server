@@ -64,7 +64,7 @@ Cloudflare Tunnel  →  Gateway :8080  →  llama-server :8081 (loads chosen mod
 | `1b_setup_llama.ipynb` | Internet ON, GPU T4 x1 | Private dataset `llama-cpp-bin` (latest llama.cpp) |
 | `1c_setup_deepseek.ipynb` | Internet ON, no GPU | Private dataset `deepseek-v4-pro-9b-gguf` (F16 ~17 GB, ~10–30 min download) |
 
-All auto-detect your username. Just **Run All**. (To skip setup, attach the public datasets by `tahsinekajolasalami` instead.)
+All auto-detect your username — just **Run All**. If detection fails, see [Kaggle username](#kaggle-username) below. (To skip setup, attach the public datasets by `tahsinekajolasalami` instead.)
 
 > ⚠️ The 9B model uses the new `qwen3_5` architecture — requires llama.cpp **b12182+**. Re-run `1b_setup_llama.ipynb` if needed.
 
@@ -95,7 +95,29 @@ curl https://xxxx.trycloudflare.com/v1/chat/completions \
 
 ## Configuration
 
-Each notebook's first code cell holds all settings (dataset names, context sizes, sampling params, model aliases). Username detection is automatic.
+Each notebook's first code cell holds all settings (dataset names, context sizes, sampling params, model aliases).
+
+### Kaggle username
+
+Every notebook starts with this line (left **empty** on purpose — no hardcoded username, so anyone can use this repo):
+
+```python
+KAGGLE_USERNAME = ""   # leave empty = auto-detect; or fill in your own username
+```
+
+**In most cases you don't need to touch it.** The notebook detects your username automatically, in this order:
+
+1. Kaggle environment variables (`KAGGLE_USERNAME`, `KAGGLE_USER`, `KAGGLE_KERNEL_OWNER_NAME`, `KERNEL_OWNER`)
+2. Your Kaggle API token `~/.kaggle/kaggle.json`
+3. An attached dataset path (`/kaggle/input/datasets/<username>/...`)
+
+**If auto-detection fails** (the setup notebooks will stop with a clear message), fill it in manually at the top of the cell:
+
+```python
+KAGGLE_USERNAME = "your_username"   # your Kaggle handle
+```
+
+Find your username at **https://www.kaggle.com/settings** (the "Username" field), or in your profile URL `kaggle.com/<username>`. `2_run_server.ipynb` discovers models by scanning attached datasets, so it works even without a username.
 
 ## Session limits
 
