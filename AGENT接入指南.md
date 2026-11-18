@@ -77,12 +77,25 @@ Settings → Connections → OpenAI API:
 - Key: `none`
 - 保存后模型列表会自动出现两个模型，在下拉框里切换。
 
-## 5. Chatbox / LM Studio / Chatterbox 等桌面客户端
+## 5. Chatbox（最省事的图形聊天窗口，推荐新手）
 
-- API 类型选 **OpenAI API**
-- API Host: `https://xxxx.trycloudflare.com/v1`
-- API Key: `none`
-- Model: 选或填 `deepseek-v4-pro-9b` 等
+官网免费下载：`https://chatboxai.app/zh`（Windows 选 .exe）。它自带模型下拉切换框，最适合"用哪个点哪个"。
+
+配置一次即可（左下角齿轮 → 模型提供方 → 添加）：
+
+| 字段 | 填什么 |
+|---|---|
+| 提供方名称 | 随便，如 `My Kaggle` |
+| API 模式 | **OpenAI API 兼容** |
+| API 主机 / Host | `https://xxxx.trycloudflare.com/v1`（换成 Cell 6 新 URL）|
+| API Key | `none`（随便填，服务器不校验）|
+| 模型 | 手动添加两个：`qwen3.6-35b-a3b`、`deepseek-v4-pro-9b` |
+
+保存 → 点「检查」看到连接成功 → 回主界面。之后在**聊天窗口顶部的模型下拉框**里选一个即可，切模型不用改 URL。
+
+> 注意：Kaggle 会话停掉再启动会生成**新 URL**，届时只需回这里把 API 主机换成新的，模型名不用动。
+
+同类桌面客户端（LM Studio / Chatterbox / Cherry Studio）配置一样：API 类型选 OpenAI，Host 填上面地址，Key 填 `none`，模型名手动加。
 
 ## 6. Python (openai SDK)
 
