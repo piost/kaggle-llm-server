@@ -1,26 +1,285 @@
 # -*- coding: utf-8 -*-
 # ============================================================
-# 一键重建「网页聊天窗口」服务
+# 一键重建服务（官方 llama.cpp WebUI + 双模型网关）
 #
-# 为什么需要它：
-#   Cell 7 是 while True 保活循环，霸占着 Kaggle 内核。
-#   Kaggle 内核一次只能跑一个单元格，所以你新加的单元格
-#   点了运行只会排队，永远轮不到 —— 这就是"点了没反应"。
-#
-# 用法（3 步）：
-#   1) 点工具栏的 ■ (Interrupt Kernel) 停掉当前服务（正常，URL 会变）
-#   2) 把本文件全部内容粘贴到那个新单元格，运行
-#   3) 打印出新 URL 后，浏览器打开它（不要加 /v1）就是聊天窗口
-#
-# 注意：不要在这个脚本之后再 Run All！
-#   旧版 Cell 10 会把聊天界面覆盖掉。这个脚本自己已经把
-#   网关 + 隧道 + 保活全部拉起来了，不需要 Run All。
+# 用法：
+#   1) 点工具栏 ■ (Interrupt Kernel) 停掉占内核的 Cell 7
+#   2) 把本文件全部内容粘进一个新单元格，运行
+#   3) 打印出新 URL 后，浏览器打开它（不加 /v1）= 官方 WebUI
+#   4) 末尾保活循环一直转圈是正常的，别停
 # ============================================================
 import os, json, subprocess, time, re, datetime, requests
 
-GP = '/kaggle/working/model_gateway.py'
+GW_PATH = '/kaggle/working/model_gateway.py'
+GATEWAY_SRC = r'''#!/usr/bin/env python3
+# OpenAI-compatible multi-model switching gateway for Kaggle.
+# Serves llama.cpp's OFFICIAL built-in WebUI by proxying it from the backend,
+# while routing /v1/* API calls through the model-switching layer.
+# Falls back to a built-in chat page if the backend has no WebUI.
+import json, os, subprocess, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import requests
 
-# ---- 1) 读取配置（Interrupt 不清空内核变量，优先用现成的） ----
+GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8080"))
+BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8081"))
+LLAMA_SERVER = os.environ.get("LLAMA_SERVER", "/kaggle/working/llama-server")
+MODEL_CONFIGS = json.loads(os.environ.get("MODEL_CONFIGS", "{}"))
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", next(iter(MODEL_CONFIGS), ""))
+LOG_PATH = "/tmp/llama-backend.log"
+
+FALLBACK_UI = '<!DOCTYPE html>\n<html lang="zh">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Kaggle LLM</title>\n<style>\n:root{--bg:#ffffff;--panel:#fbfbfb;--border:#e8e8e8;--text:#1f1f1f;--muted:#9a9a9a;--bubble:#f4f4f4;--accent:#1a1a1a}\n*{box-sizing:border-box}\nhtml,body{height:100%}\nbody{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(--text);background:var(--bg);display:flex;font-size:14px}\n#side{width:58px;flex:0 0 58px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:8px}\n#side .logo{width:34px;height:34px;border-radius:10px;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;margin-bottom:8px}\n#side .ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#666;font-size:19px;user-select:none}\n#side .ico:hover{background:#efefef}\n#side .spacer{flex:1}\n#main{flex:1;display:flex;flex-direction:column;height:100vh;position:relative;min-width:0}\n#wrap{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center}\n#welcome{margin:auto;text-align:center;padding:24px}\n#welcome h1{font-size:30px;font-weight:600;margin:0 0 10px;letter-spacing:-.4px}\n#welcome p{color:var(--muted);margin:0;font-size:15px}\n#msgs{width:min(760px,92%);display:none;flex-direction:column;gap:24px;padding:30px 0 168px}\n.msg{line-height:1.72;white-space:pre-wrap;word-break:break-word}\n.msg .who{font-size:12px;color:var(--muted);margin-bottom:6px}\n.msg.user{align-self:flex-end;max-width:82%;background:var(--bubble);padding:10px 16px;border-radius:18px}\n.msg.user .who{display:none}\n.msg.ai{align-self:flex-start;max-width:100%}\n#composer{position:absolute;left:0;right:0;bottom:0;padding:0 20px 20px;display:flex;justify-content:center;pointer-events:none}\n#box{pointer-events:auto;width:min(760px,92%);background:#fff;border:1px solid #dcdcdc;border-radius:26px;box-shadow:0 6px 26px rgba(0,0,0,.07);padding:14px 14px 9px}\n#box textarea{width:100%;border:0;outline:0;resize:none;font:inherit;font-size:15px;line-height:1.5;max-height:160px;min-height:28px;padding:2px 6px;background:transparent;color:var(--text)}\n#row{display:flex;align-items:center;gap:8px;margin-top:6px}\n.iconbtn{width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#555}\n#modelBtn{margin-left:auto;display:flex;align-items:center;gap:7px;border:1px solid var(--border);background:#fafafa;border-radius:18px;padding:6px 12px;cursor:pointer;font-size:13px;color:#333}\n#modelBtn .dot{width:7px;height:7px;border-radius:50%;background:#22a06b}\n#send{width:34px;height:34px;border-radius:50%;border:0;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px}\n#send:disabled{opacity:.45;cursor:not-allowed}\n#menu{position:absolute;bottom:70px;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.14);padding:6px;min-width:250px;display:none;z-index:5}\n#menu div{padding:10px 12px;border-radius:9px;cursor:pointer;font-size:14px}\n#menu div:hover{background:#f2f2f2}\n#menu div.on{background:#1a1a1a;color:#fff}\n#hint{font-size:11px;color:#b5b5b5;text-align:center;margin-top:7px}\n</style>\n</head>\n<body>\n<div id="side">\n  <div class="logo" title="Kaggle LLM">K</div>\n  <div class="ico" id="newChat" title="新对话">＋</div>\n  <div class="ico" id="actModel" title="模型">◈</div>\n  <div class="spacer"></div>\n  <div class="ico" title="设置">⚙</div>\n</div>\n<div id="main">\n  <div id="wrap">\n    <div id="welcome">\n      <h1>Hello there</h1>\n      <p>Type a message or upload files to get started</p>\n    </div>\n    <div id="msgs"></div>\n  </div>\n  <div id="menu"></div>\n  <div id="composer">\n    <div id="box">\n      <textarea id="in" rows="1" placeholder="Type a message..."></textarea>\n      <div id="row">\n        <button class="iconbtn" id="plus" title="上传文件（暂未开放）">＋</button>\n        <button id="modelBtn"><span class="dot"></span><span id="modelLabel">加载中…</span><span style="color:#999">▾</span></button>\n        <button id="send" title="发送">➤</button>\n      </div>\n      <div id="hint">点输入框右下角模型标签切换模型，不用改网址</div>\n    </div>\n  </div>\n</div>\n<script>\nconst $=s=>document.querySelector(s);\nlet hist=[], current=\'\', busy=false;\nfunction scroll(){const w=$(\'#wrap\');w.scrollTop=w.scrollHeight}\nfunction setModel(m){\n  current=m;\n  $(\'#modelLabel\').textContent=m.replace(/^.*?:/,\'\');\n  document.querySelectorAll(\'#menu div\').forEach(d=>d.classList.toggle(\'on\',d.dataset.id===m));\n}\nfunction reset(){hist=[];$(\'#msgs\').innerHTML=\'\';$(\'#msgs\').style.display=\'none\';$(\'#welcome\').style.display=\'block\';$(\'#menu\').style.display=\'none\'}\nasync function loadModels(){\n  try{\n    const j=await (await fetch(\'/v1/models\')).json();\n    const menu=$(\'#menu\');menu.innerHTML=\'\';\n    (j.data||[]).forEach(m=>{\n      const d=document.createElement(\'div\');d.dataset.id=m.id;d.textContent=m.id;\n      d.onclick=()=>{setModel(m.id);reset()};\n      menu.appendChild(d);\n    });\n    setModel((j.data[0]||{}).id||\'\');\n  }catch(e){$(\'#modelLabel\').textContent=\'未就绪\'}\n}\nfunction addMsg(who,text){\n  $(\'#welcome\').style.display=\'none\';\n  const box=$(\'#msgs\');box.style.display=\'flex\';\n  const d=document.createElement(\'div\');d.className=\'msg \'+who;\n  const w=document.createElement(\'div\');w.className=\'who\';w.textContent=who===\'user\'?\'You\':current;\n  const t=document.createElement(\'div\');t.textContent=text;\n  d.appendChild(w);d.appendChild(t);box.appendChild(d);scroll();\n  return t;\n}\nasync function send(){\n  if(busy)return;\n  const v=$(\'#in\').value.trim();if(!v)return;\n  $(\'#in\').value=\'\';$(\'#in\').style.height=\'auto\';\n  addMsg(\'user\',v);hist.push({role:\'user\',content:v});\n  const out=addMsg(\'ai\',\'思考中…（首次加载模型可能要 1~2 分钟）\');\n  busy=true;$(\'#send\').disabled=true;\n  try{\n    const r=await fetch(\'/v1/chat/completions\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({model:current,messages:hist})});\n    const j=await r.json();\n    if(j.error)throw new Error(j.error.message);\n    const a=j.choices[0].message.content;\n    out.textContent=a;hist.push({role:\'assistant\',content:a});\n  }catch(e){out.textContent=\'❌ \'+e.message}\n  busy=false;$(\'#send\').disabled=false;scroll();\n}\n$(\'#send\').onclick=send;\n$(\'#in\').onkeydown=e=>{if(e.key===\'Enter\'&&!e.shiftKey){e.preventDefault();send()}};\n$(\'#in\').oninput=()=>{$(\'#in\').style.height=\'auto\';$(\'#in\').style.height=Math.min($(\'#in\').scrollHeight,160)+\'px\'};\nfunction toggleMenu(){const m=$(\'#menu\');m.style.display=m.style.display===\'block\'?\'none\':\'block\'}\n$(\'#modelBtn\').onclick=e=>{e.stopPropagation();toggleMenu()};\n$(\'#actModel\').onclick=e=>{e.stopPropagation();toggleMenu()};\ndocument.addEventListener(\'click\',e=>{if(!e.target.closest(\'#menu\')&&!e.target.closest(\'#modelBtn\')&&!e.target.closest(\'#actModel\')) $(\'#menu\').style.display=\'none\'});\n$(\'#newChat\').onclick=reset;\n$(\'#plus\').onclick=()=>alert(\'文件上传暂未开放，请先输入文字消息。\');\nloadModels();\n</script>\n</body>\n</html>'
+
+_lock = threading.Lock()
+_current = None
+_proc = None
+
+def log(msg):
+    print("[gateway] " + str(msg), flush=True)
+
+def healthy():
+    try:
+        r = requests.get("http://localhost:%d/health" % BACKEND_PORT, timeout=3)
+        return r.status_code == 200 and r.json().get("status") == "ok"
+    except Exception:
+        return False
+
+def stop_backend():
+    global _proc
+    subprocess.run(["pkill", "-f", "llama-server"], capture_output=True)
+    if _proc is not None and _proc.poll() is None:
+        try:
+            _proc.terminate()
+            _proc.wait(timeout=20)
+        except Exception:
+            _proc.kill()
+    _proc = None
+    time.sleep(2)
+
+def start_backend(alias):
+    global _proc, _current
+    cfg = MODEL_CONFIGS[alias]
+    cmd = [
+        LLAMA_SERVER,
+        "--model", cfg["model"],
+        "--host", "0.0.0.0",
+        "--port", str(BACKEND_PORT),
+        "--alias", alias,
+        "--n-gpu-layers", str(cfg.get("ngl", 999)),
+        "--ctx-size", str(cfg.get("ctx", 16384)),
+        "--temp", str(cfg.get("temp", 0.7)),
+        "--top-p", str(cfg.get("top_p", 0.8)),
+        "--top-k", str(cfg.get("top_k", 20)),
+        "--min-p", str(cfg.get("min_p", 0.0)),
+        "--presence-penalty", str(cfg.get("presence", 1.5)),
+        "--log-file", LOG_PATH,
+    ]
+    if cfg.get("mmproj"):
+        cmd += ["--mmproj", cfg["mmproj"]]
+    for extra in cfg.get("extra_args", []):
+        cmd += [extra]
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = "/kaggle/working:" + env.get("LD_LIBRARY_PATH", "")
+    log("starting backend: " + alias)
+    with open("/tmp/llama-backend-stdout.log", "w") as out:
+        _proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
+    deadline = time.time() + 900
+    while time.time() < deadline:
+        if healthy():
+            _current = alias
+            log("backend ready: " + alias)
+            return True
+        if _proc.poll() is not None:
+            log("backend exited early; check /tmp/llama-backend-stdout.log")
+            return False
+        time.sleep(3)
+    log("backend load timeout")
+    return False
+
+def ensure_model(alias):
+    global _current
+    with _lock:
+        if alias not in MODEL_CONFIGS:
+            return False
+        if _current == alias and healthy():
+            return True
+        stop_backend()
+        return start_backend(alias)
+
+def official_webui_available():
+    """True when llama-server serves its built-in WebUI at /."""
+    try:
+        r = requests.get("http://localhost:%d/" % BACKEND_PORT, timeout=8)
+        t = r.text
+        return r.status_code == 200 and (("<!DOCTYPE html" in t) or ("/assets/" in t) or ("llama" in t.lower()))
+    except Exception:
+        return False
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send_json(self, obj, status=200):
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_html(self, html, status=200):
+        data = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        p = self.path
+        if p == "/health":
+            self._send_json({"status": "ok", "current_model": _current,
+                             "available": list(MODEL_CONFIGS.keys())})
+            return
+        if p.startswith("/v1/models"):
+            data = [{"id": a, "object": "model", "owned_by": "kaggle", "created": 0}
+                    for a in MODEL_CONFIGS]
+            self._send_json({"object": "list", "data": data})
+            return
+        if p == "/v1/model":
+            self._send_json({"current_model": _current})
+            return
+        # Everything else: official llama.cpp WebUI (/, /assets/*, /props, ...)
+        self._serve_webui("GET")
+
+    def do_POST(self):
+        p = self.path
+        if p.startswith("/v1/") or p.startswith("/completion"):
+            self._forward_api("POST")
+        else:
+            self._serve_webui("POST")
+
+    def _serve_webui(self, method):
+        alias = _current if _current in MODEL_CONFIGS else DEFAULT_MODEL
+        if not ensure_model(alias):
+            self._send_json({"error": {"message": "Backend failed to load " + alias,
+                                       "type": "server_error"}}, 503)
+            return
+        if method == "GET" and self.path in ("/", "/index.html"):
+            if official_webui_available():
+                log("serving OFFICIAL llama.cpp WebUI")
+                self._raw_proxy("GET")
+            else:
+                log("official WebUI not found; serving fallback chat page")
+                self._send_html(FALLBACK_UI)
+            return
+        self._raw_proxy(method)
+
+    def _raw_proxy(self, method):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        url = "http://localhost:%d%s" % (BACKEND_PORT, self.path)
+        fwd = {k: v for k, v in self.headers.items()
+               if k.lower() not in ("host", "content-length", "transfer-encoding", "connection")}
+        try:
+            r = requests.request(method, url, data=body if body else None,
+                                 headers=fwd, stream=True, timeout=(10, 3600))
+        except Exception as e:
+            self._send_json({"error": {"message": str(e), "type": "server_error"}}, 502)
+            return
+        is_stream = "text/event-stream" in r.headers.get("content-type", "")
+        self.send_response(r.status_code)
+        for k, v in r.headers.items():
+            if k.lower() in ("content-length", "transfer-encoding", "connection", "content-encoding"):
+                continue
+            self.send_header(k, v)
+        if is_stream:
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:
+                        self.wfile.write(("%X\r\n" % len(chunk)).encode() + chunk + b"\r\n")
+                        self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+        else:
+            payload = r.content
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    def _forward_api(self, method):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        wanted = None
+        if body:
+            try:
+                wanted = json.loads(body).get("model")
+            except Exception:
+                pass
+        alias = wanted if wanted in MODEL_CONFIGS else (DEFAULT_MODEL if wanted is None else None)
+        if alias is None:
+            self._send_json({"error": {"message": "Unknown model: " + str(wanted),
+                                       "type": "invalid_request_error"}}, 400)
+            return
+        if not ensure_model(alias):
+            self._send_json({"error": {"message": "Failed to load model " + alias,
+                                       "type": "server_error"}}, 500)
+            return
+        url = "http://localhost:%d%s" % (BACKEND_PORT, self.path)
+        fwd = {k: v for k, v in self.headers.items()
+               if k.lower() not in ("host", "content-length", "transfer-encoding", "connection")}
+        try:
+            r = requests.request(method, url, data=body if body else None,
+                                 headers=fwd, stream=True, timeout=(10, 3600))
+        except Exception as e:
+            self._send_json({"error": {"message": str(e), "type": "server_error"}}, 502)
+            return
+        is_stream = "text/event-stream" in r.headers.get("content-type", "")
+        self.send_response(r.status_code)
+        for k, v in r.headers.items():
+            if k.lower() in ("content-length", "transfer-encoding", "connection", "content-encoding"):
+                continue
+            self.send_header(k, v)
+        if is_stream:
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:
+                        self.wfile.write(("%X\r\n" % len(chunk)).encode() + chunk + b"\r\n")
+                        self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+        else:
+            payload = r.content
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+if __name__ == "__main__":
+    log("available models: " + ", ".join(MODEL_CONFIGS.keys()))
+    log("default model: " + DEFAULT_MODEL)
+    srv = ThreadingHTTPServer(("0.0.0.0", GATEWAY_PORT), Handler)
+    log("gateway listening on port " + str(GATEWAY_PORT))
+    threading.Thread(target=ensure_model, args=(DEFAULT_MODEL,), daemon=True).start()
+    srv.serve_forever()
+'''
+
 def _cfg(name, default=None):
     if name in globals():
         return globals()[name]
@@ -31,173 +290,12 @@ _BACKEND = int(_cfg('BACKEND_PORT', os.environ.get('BACKEND_PORT', '8081')))
 _LLAMA   = str(_cfg('LLAMA_SERVER', os.environ.get('LLAMA_SERVER', '/kaggle/working/llama-server')))
 _CFG     = _cfg('MODEL_CONFIGS', None) or json.loads(os.environ.get('MODEL_CONFIGS', '{}'))
 _DEFAULT = _cfg('DEFAULT_MODEL', None) or os.environ.get('DEFAULT_MODEL') or next(iter(_CFG), '')
-assert _CFG, '读不到模型配置，请确认之前 Run All 成功过（内核变量被清了就 Restart 后重跑 Cell 2）'
+assert _CFG, '读不到模型配置，请确认这个 notebook 之前 Run All 成功过'
 
-# ---- 2) 给网关注入聊天界面（幂等，重复运行不会出错） ----
-WEB_UI = """<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Kaggle LLM</title>
-<style>
-:root{--bg:#ffffff;--panel:#fbfbfb;--border:#e8e8e8;--text:#1f1f1f;--muted:#9a9a9a;--bubble:#f4f4f4;--accent:#1a1a1a}
-*{box-sizing:border-box}
-html,body{height:100%}
-body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(--text);background:var(--bg);display:flex;font-size:14px}
-#side{width:58px;flex:0 0 58px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:8px}
-#side .logo{width:34px;height:34px;border-radius:10px;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;margin-bottom:8px}
-#side .ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#666;font-size:19px;user-select:none}
-#side .ico:hover{background:#efefef}
-#side .spacer{flex:1}
-#main{flex:1;display:flex;flex-direction:column;height:100vh;position:relative;min-width:0}
-#wrap{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center}
-#welcome{margin:auto;text-align:center;padding:24px}
-#welcome h1{font-size:30px;font-weight:600;margin:0 0 10px;letter-spacing:-.4px}
-#welcome p{color:var(--muted);margin:0;font-size:15px}
-#msgs{width:min(760px,92%);display:none;flex-direction:column;gap:24px;padding:30px 0 168px}
-.msg{line-height:1.72;white-space:pre-wrap;word-break:break-word}
-.msg .who{font-size:12px;color:var(--muted);margin-bottom:6px}
-.msg.user{align-self:flex-end;max-width:82%;background:var(--bubble);padding:10px 16px;border-radius:18px}
-.msg.user .who{display:none}
-.msg.ai{align-self:flex-start;max-width:100%}
-#composer{position:absolute;left:0;right:0;bottom:0;padding:0 20px 20px;display:flex;justify-content:center;pointer-events:none}
-#box{pointer-events:auto;width:min(760px,92%);background:#fff;border:1px solid #dcdcdc;border-radius:26px;box-shadow:0 6px 26px rgba(0,0,0,.07);padding:14px 14px 9px}
-#box textarea{width:100%;border:0;outline:0;resize:none;font:inherit;font-size:15px;line-height:1.5;max-height:160px;min-height:28px;padding:2px 6px;background:transparent;color:var(--text)}
-#row{display:flex;align-items:center;gap:8px;margin-top:6px}
-.iconbtn{width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#555}
-#modelBtn{margin-left:auto;display:flex;align-items:center;gap:7px;border:1px solid var(--border);background:#fafafa;border-radius:18px;padding:6px 12px;cursor:pointer;font-size:13px;color:#333}
-#modelBtn .dot{width:7px;height:7px;border-radius:50%;background:#22a06b}
-#send{width:34px;height:34px;border-radius:50%;border:0;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px}
-#send:disabled{opacity:.45;cursor:not-allowed}
-#menu{position:absolute;bottom:70px;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.14);padding:6px;min-width:250px;display:none;z-index:5}
-#menu div{padding:10px 12px;border-radius:9px;cursor:pointer;font-size:14px}
-#menu div:hover{background:#f2f2f2}
-#menu div.on{background:#1a1a1a;color:#fff}
-#hint{font-size:11px;color:#b5b5b5;text-align:center;margin-top:7px}
-</style>
-</head>
-<body>
-<div id="side">
-  <div class="logo" title="Kaggle LLM">K</div>
-  <div class="ico" id="newChat" title="新对话">＋</div>
-  <div class="ico" id="actModel" title="模型">◈</div>
-  <div class="spacer"></div>
-  <div class="ico" title="设置">⚙</div>
-</div>
-<div id="main">
-  <div id="wrap">
-    <div id="welcome">
-      <h1>Hello there</h1>
-      <p>Type a message or upload files to get started</p>
-    </div>
-    <div id="msgs"></div>
-  </div>
-  <div id="menu"></div>
-  <div id="composer">
-    <div id="box">
-      <textarea id="in" rows="1" placeholder="Type a message..."></textarea>
-      <div id="row">
-        <button class="iconbtn" id="plus" title="上传文件（暂未开放）">＋</button>
-        <button id="modelBtn"><span class="dot"></span><span id="modelLabel">加载中…</span><span style="color:#999">▾</span></button>
-        <button id="send" title="发送">➤</button>
-      </div>
-      <div id="hint">点输入框右下角模型标签切换模型，不用改网址</div>
-    </div>
-  </div>
-</div>
-<script>
-const $=s=>document.querySelector(s);
-let hist=[], current='', busy=false;
-function scroll(){const w=$('#wrap');w.scrollTop=w.scrollHeight}
-function setModel(m){
-  current=m;
-  $('#modelLabel').textContent=m.replace(/^.*?:/,'');
-  document.querySelectorAll('#menu div').forEach(d=>d.classList.toggle('on',d.dataset.id===m));
-}
-function reset(){hist=[];$('#msgs').innerHTML='';$('#msgs').style.display='none';$('#welcome').style.display='block';$('#menu').style.display='none'}
-async function loadModels(){
-  try{
-    const j=await (await fetch('/v1/models')).json();
-    const menu=$('#menu');menu.innerHTML='';
-    (j.data||[]).forEach(m=>{
-      const d=document.createElement('div');d.dataset.id=m.id;d.textContent=m.id;
-      d.onclick=()=>{setModel(m.id);reset()};
-      menu.appendChild(d);
-    });
-    setModel((j.data[0]||{}).id||'');
-  }catch(e){$('#modelLabel').textContent='未就绪'}
-}
-function addMsg(who,text){
-  $('#welcome').style.display='none';
-  const box=$('#msgs');box.style.display='flex';
-  const d=document.createElement('div');d.className='msg '+who;
-  const w=document.createElement('div');w.className='who';w.textContent=who==='user'?'You':current;
-  const t=document.createElement('div');t.textContent=text;
-  d.appendChild(w);d.appendChild(t);box.appendChild(d);scroll();
-  return t;
-}
-async function send(){
-  if(busy)return;
-  const v=$('#in').value.trim();if(!v)return;
-  $('#in').value='';$('#in').style.height='auto';
-  addMsg('user',v);hist.push({role:'user',content:v});
-  const out=addMsg('ai','思考中…（首次加载模型可能要 1~2 分钟）');
-  busy=true;$('#send').disabled=true;
-  try{
-    const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:current,messages:hist})});
-    const j=await r.json();
-    if(j.error)throw new Error(j.error.message);
-    const a=j.choices[0].message.content;
-    out.textContent=a;hist.push({role:'assistant',content:a});
-  }catch(e){out.textContent='❌ '+e.message}
-  busy=false;$('#send').disabled=false;scroll();
-}
-$('#send').onclick=send;
-$('#in').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}};
-$('#in').oninput=()=>{$('#in').style.height='auto';$('#in').style.height=Math.min($('#in').scrollHeight,160)+'px'};
-function toggleMenu(){const m=$('#menu');m.style.display=m.style.display==='block'?'none':'block'}
-$('#modelBtn').onclick=e=>{e.stopPropagation();toggleMenu()};
-$('#actModel').onclick=e=>{e.stopPropagation();toggleMenu()};
-document.addEventListener('click',e=>{if(!e.target.closest('#menu')&&!e.target.closest('#modelBtn')&&!e.target.closest('#actModel')) $('#menu').style.display='none'});
-$('#newChat').onclick=reset;
-$('#plus').onclick=()=>alert('文件上传暂未开放，请先输入文字消息。');
-loadModels();
-</script>
-</body>
-</html>"""
+# 写入代理版网关
+open(GW_PATH, 'w', encoding='utf-8').write(GATEWAY_SRC)
+print('OK 代理版网关已写入')
 
-s = open(GP, encoding='utf-8').read()
-if 'WEB_UI = ' in s:
-    print('聊天界面已在网关里，跳过注入')
-else:
-    anchor = 'def log(msg):'
-    assert anchor in s, '网关版本不匹配，请重新导入最新版 2_run_server.ipynb'
-    s = s.replace(anchor, 'WEB_UI = ' + repr(WEB_UI) + '\n\n' + anchor, 1)
-    old = '''        if self.path in ("/health", "/"):
-            self._send_json({"status": "ok", "current_model": _current,
-                             "available": list(MODEL_CONFIGS.keys())})
-            return
-'''
-    new = '''        if self.path == "/health":
-            self._send_json({"status": "ok", "current_model": _current,
-                             "available": list(MODEL_CONFIGS.keys())})
-            return
-        if self.path in ("/", "/index.html"):
-            _data = WEB_UI.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(_data)))
-            self.end_headers()
-            self.wfile.write(_data)
-            return
-'''
-    assert old in s, '网关路由不匹配，请重新导入最新版 2_run_server.ipynb'
-    s = s.replace(old, new, 1)
-    open(GP, 'w', encoding='utf-8').write(s)
-    print('OK 聊天界面已注入网关')
-
-# ---- 3) 环境变量（网关子进程要用） ----
 os.environ.update(
     MODEL_CONFIGS=json.dumps(_CFG, ensure_ascii=False),
     DEFAULT_MODEL=_DEFAULT,
@@ -206,15 +304,13 @@ os.environ.update(
     LLAMA_SERVER=_LLAMA,
 )
 
-# ---- 4) 清理旧进程 ----
 subprocess.run(['pkill', '-f', 'model_gateway.py'], capture_output=True)
 subprocess.run(['pkill', '-f', 'cloudflared'], capture_output=True)
 subprocess.run(['pkill', '-f', 'llama-server'], capture_output=True)
 time.sleep(2)
 
-# ---- 5) 重启网关 ----
 gateway_proc = subprocess.Popen(
-    ['python', GP], stdout=open('/tmp/gateway.log', 'w'),
+    ['python', GW_PATH], stdout=open('/tmp/gateway.log', 'w'),
     stderr=subprocess.STDOUT, env={**os.environ}, start_new_session=True)
 time.sleep(4)
 try:
@@ -222,7 +318,6 @@ try:
 except Exception as e:
     print('网关启动中，稍后健康检查会确认:', e)
 
-# ---- 6) 重启 Cloudflare 隧道，拿新 URL ----
 tunnel_log = '/tmp/cloudflare.log'
 with open(tunnel_log, 'w') as log:
     tunnel_proc = subprocess.Popen(
@@ -233,7 +328,7 @@ url = None
 for _ in range(30):
     time.sleep(2)
     try:
-        m = re.search(r'https://[\w-]+\.trycloudflare\.com', open(tunnel_log).read())
+        m = re.search(r'https://[\\w-]+\\.trycloudflare\\.com', open(tunnel_log).read())
         if m:
             url = m.group(0)
             break
@@ -247,13 +342,12 @@ if not url:
 
 print()
 print('=' * 62)
-print('  聊天窗口地址（浏览器打开这个，不要加 /v1）：')
+print('  官方 WebUI 聊天地址（浏览器打开这个，不要加 /v1）：')
 print(f'  {url}')
-print(f'  OpenAI API: {url}/v1')
+print(f'  OpenAI API: {url}/v1   模型: {list(_CFG)}')
 print('=' * 62)
 
-# ---- 7) 保活循环 ----
-print('\n服务运行中；这个单元格会一直转圈是正常的，别停。')
+print('\\n服务运行中；这个单元格会一直转圈是正常的，别停。')
 _t0 = datetime.datetime.now()
 try:
     while True:

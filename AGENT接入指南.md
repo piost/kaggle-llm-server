@@ -21,42 +21,23 @@
 
 ## 0. 网页聊天窗口（浏览器直接用，推荐）
 
-**不用装任何软件**——打开 `https://xxxx.trycloudflare.com`（Cell 6 给你的地址，去掉 `/v1`），就是一个带**模型下拉框**的聊天窗口，跟原版 llama-ui 一样：顶部下拉框选 `qwen3.6-35b-a3b` 或 `deepseek-v4-pro-9b`，输入消息回车即可对话，切模型不用改网址。
+**不用装任何软件**——打开 `https://xxxx.trycloudflare.com`（Cell 6 给你的地址，去掉 `/v1`），就是 **llama.cpp 官方内置 WebUI（Llama Chat）原样界面**，功能跟原版完全一致：
 
-> 这是 v2 新增的内置界面。如果你的地址打开还是一段 JSON，说明运行的是**旧版网关**，按情况二选一：
-> - **服务还在跑、只是缺聊天界面** → 用下面「热更新 A」（URL 不变、不用重跑）
-> - **服务已停 / Cell 7 保活循环占着内核导致新单元格跑不动** → 用仓库里的 `一键重建聊天版服务.py`（一次拉起网关+隧道+保活，会拿到新 URL）
+- 左侧栏：**New chat / Search（搜历史对话）/ MCP Servers（连外部工具）/ Settings / Recent conversations**
+- Settings 九个面板：General / Display / Sampling / Penalties / Agentic / Developer / MCP / Tools / Import-Export（可调 system message、temperature/top-k/top-p、API Key、JSON schema 等）
+- 聊天：Markdown + 代码高亮、LaTeX 数学公式、思考过程折叠、图片/PDF/音频附件、对话分叉编辑、导入导出
+- **模型切换**：界面从 `/v1/models` 读到两个模型，切换时在请求里带 `model` 字段，网关据此加载对应模型——不用改网址
 
-### 热更新 A（服务仍在运行时，URL 不变、不用重跑全部）
+> 网关把 llama-server 自带的官方 WebUI 原样代理过来（`/`、`/assets/*`、`/props` 全部透传），只有 `/v1/*` API 走模型切换层。如果 llama-server 版本太旧没有 WebUI，会自动回退到内置简易聊天页。
 
-在 Kaggle notebook **最底部新增一个代码单元格**，粘贴下面代码并运行，10 秒后刷新浏览器即可看到聊天窗口：
+### 更新到官方 WebUI 版
 
-```python
-# 热更新：给正在跑的服务加网页聊天窗口（URL 不变、不重跑 notebook）
-import urllib.request, json, ast, os, subprocess, time
-RAW = "https://raw.githubusercontent.com/piost/kaggle-llm-server/main/2_run_server.ipynb"
-nb = json.loads(urllib.request.urlopen(RAW, timeout=30).read())
-cell = ''.join(nb['cells'][10]['source'])
-tree = ast.parse(cell)
-GATEWAY_SRC = next(
-    ast.literal_eval(n.value) for n in ast.walk(tree)
-    if isinstance(n, ast.Assign)
-    and any(isinstance(t, ast.Name) and t.id == 'GATEWAY_SRC' for t in n.targets)
-)
-open('/kaggle/working/model_gateway.py', 'w').write(GATEWAY_SRC)
-os.environ['MODEL_CONFIGS'] = json.dumps(MODEL_CONFIGS, ensure_ascii=False)
-os.environ.update(DEFAULT_MODEL=DEFAULT_MODEL, GATEWAY_PORT=str(PORT),
-                  BACKEND_PORT=str(BACKEND_PORT), LLAMA_SERVER=str(LLAMA_SERVER))
-subprocess.run(['pkill', '-f', 'model_gateway.py'], capture_output=True)
-time.sleep(2)
-subprocess.Popen(['python', '/kaggle/working/model_gateway.py'],
-                 stdout=open('/tmp/gateway.log', 'w'), stderr=subprocess.STDOUT,
-                 env={**os.environ}, start_new_session=True)
-time.sleep(4)
-import requests as _rq
-print(_rq.get(f'http://localhost:{PORT}/health', timeout=5).json())
-print('完成：刷新浏览器打开原来的 URL，就是聊天窗口了')
-```
+如果你的地址打开还是**一段 JSON** 或**旧版简陋界面**，说明跑的是旧网关：
+
+- **服务已停 / Cell 7 保活循环占着内核**（新单元格跑不动）→ 点工具栏 ■ (Interrupt Kernel) 停掉，然后在新单元格里粘贴仓库里的 `一键重建聊天版服务.py` 全部内容并运行，会拿到新 URL（一次拉起网关+隧道+保活）。
+- **重新部署** → 重新导入最新版 `2_run_server.ipynb`（已内置代理版网关），挂 3 个数据集 Run All 即可，打开地址天生就是官方 WebUI。
+
+> v3 起已移除旧的"热更新 A"脚本（依赖 raw 拉取、且只覆盖网关不重启隧道，容易失效），统一用 `一键重建聊天版服务.py`。
 
 ---
 
