@@ -164,6 +164,11 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/v1/model":
             self._send_json({"current_model": _current})
             return
+        # Force the official WebUI into ROUTER mode: it only turns the model
+        # label into a real switchable dropdown when /props reports role=router.
+        if p.split("?")[0] == "/props":
+            self._serve_props_as_router()
+            return
         # Everything else: official llama.cpp WebUI (/, /assets/*, /props, ...)
         self._serve_webui("GET")
 
@@ -179,6 +184,33 @@ class Handler(BaseHTTPRequestHandler):
             self._forward_api("POST")
         else:
             self._serve_webui("POST")
+
+    def _serve_props_as_router(self):
+        """Proxy backend /props but declare role=router so the WebUI enables
+        its multi-model dropdown and calls /models/load to switch models."""
+        base = self.path.split("?", 1)
+        url = "http://localhost:%d%s" % (BACKEND_PORT, base[0])
+        if len(base) > 1:
+            url += "?" + base[1]
+        payload = b"{}"
+        try:
+            r = requests.get(url, timeout=8)
+            payload = r.content or b"{}"
+        except Exception:
+            pass
+        try:
+            props = json.loads(payload)
+            if not isinstance(props, dict):
+                props = {}
+        except Exception:
+            props = {}
+        props["role"] = "router"
+        data = json.dumps(props, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _router_load(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
