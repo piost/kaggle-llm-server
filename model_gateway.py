@@ -32,15 +32,22 @@ def healthy():
 
 def stop_backend():
     global _proc
-    subprocess.run(["pkill", "-f", "llama-server"], capture_output=True)
-    if _proc is not None and _proc.poll() is None:
-        try:
-            _proc.terminate()
-            _proc.wait(timeout=20)
-        except Exception:
-            _proc.kill()
+    # Stop ONLY the backend this gateway started. Never pkill by name: a global
+    # pkill also hits a freshly-starting backend from a concurrent switch and
+    # sends it a second SIGTERM ("Received second interrupt signal"), killing it.
+    proc = _proc
     _proc = None
-    time.sleep(2)
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()            # exactly one SIGTERM
+            proc.wait(timeout=25)
+        except Exception:
+            try:
+                proc.kill()             # only if it refuses to exit
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+    time.sleep(1)
 
 def start_backend(alias):
     global _proc, _current
@@ -68,7 +75,8 @@ def start_backend(alias):
     env["LD_LIBRARY_PATH"] = "/kaggle/working:" + env.get("LD_LIBRARY_PATH", "")
     log("starting backend: " + alias)
     with open("/tmp/llama-backend-stdout.log", "w") as out:
-        _proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
+        _proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env,
+                                 start_new_session=True)
     deadline = time.time() + 900
     while time.time() < deadline:
         if healthy():
@@ -84,13 +92,27 @@ def start_backend(alias):
 
 def ensure_model(alias):
     global _current
+    if alias not in MODEL_CONFIGS:
+        return False
     with _lock:
-        if alias not in MODEL_CONFIGS:
-            return False
-        if _current == alias and healthy():
-            return True
+        if _current == alias:
+            # Already loaded, or a load for this SAME alias is in flight.
+            # Wait for it instead of stopping/restarting — a second switch here
+            # is what killed the just-loaded DeepSeek. Never re-enter stop/start.
+            deadline = time.time() + 900
+            while time.time() < deadline:
+                if healthy():
+                    return True
+                if _proc is not None and _proc.poll() is not None:
+                    break
+                time.sleep(2)
+            return healthy()
         stop_backend()
-        return start_backend(alias)
+        _current = alias            # mark target BEFORE the slow model load
+        if not start_backend(alias):
+            _current = None
+            return False
+        return True
 
 def official_webui_available():
     """True when llama-server serves its built-in WebUI at /."""
@@ -232,11 +254,9 @@ class Handler(BaseHTTPRequestHandler):
                                        "type": "server_error"}}, 500)
 
     def _serve_webui(self, method):
-        alias = _current if _current in MODEL_CONFIGS else DEFAULT_MODEL
-        if not ensure_model(alias):
-            self._send_json({"error": {"message": "Backend failed to load " + alias,
-                                       "type": "server_error"}}, 503)
-            return
+        # Serving static WebUI assets must NOT trigger a model load/switch.
+        # A page refresh or a second tab would otherwise stop the model that is
+        # currently loading. Model load happens only via /models/load or /v1/*.
         if method == "GET" and self.path in ("/", "/index.html"):
             if official_webui_available():
                 log("serving OFFICIAL llama.cpp WebUI")
