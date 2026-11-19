@@ -138,9 +138,28 @@ class Handler(BaseHTTPRequestHandler):
                              "available": list(MODEL_CONFIGS.keys())})
             return
         if p.startswith("/v1/models"):
-            data = [{"id": a, "object": "model", "owned_by": "kaggle", "created": 0}
+            data = [{"id": a, "object": "model", "owned_by": "kaggle", "created": 0,
+                     "status": {"value": "loaded", "args": []}}
                     for a in MODEL_CONFIGS]
             self._send_json({"object": "list", "data": data})
+            return
+        if p == "/models/sse":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                for _a in MODEL_CONFIGS:
+                    _ev = {"model": _a, "event": "model_status",
+                           "data": {"value": "loaded", "args": []}}
+                    self.wfile.write(("data: " + json.dumps(_ev) + "\n\n").encode())
+                self.wfile.flush()
+                for _ in range(600):
+                    time.sleep(1)
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+            except Exception:
+                pass
             return
         if p == "/v1/model":
             self._send_json({"current_model": _current})
@@ -150,10 +169,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path
+        if p == "/models/load":
+            self._router_load()
+            return
+        if p == "/models/unload":
+            self._send_json({"success": True})
+            return
         if p.startswith("/v1/") or p.startswith("/completion"):
             self._forward_api("POST")
         else:
             self._serve_webui("POST")
+
+    def _router_load(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        wanted = None
+        if raw:
+            try:
+                wanted = json.loads(raw).get("model")
+            except Exception:
+                pass
+        if wanted not in MODEL_CONFIGS:
+            self._send_json({"error": {"message": "unknown model: " + str(wanted),
+                                       "type": "invalid_request_error"}}, 404)
+            return
+        if ensure_model(wanted):
+            self._send_json({"success": True, "model": wanted})
+        else:
+            self._send_json({"error": {"message": "failed to load " + wanted,
+                                       "type": "server_error"}}, 500)
 
     def _serve_webui(self, method):
         alias = _current if _current in MODEL_CONFIGS else DEFAULT_MODEL
