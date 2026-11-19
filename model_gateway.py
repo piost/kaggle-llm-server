@@ -24,6 +24,11 @@ def log(msg):
     print("[gateway] " + str(msg), flush=True)
 
 def healthy():
+    # A stale llama-server left by a previous gateway can still answer on the
+    # backend port. Never treat it as OUR healthy backend: our own proc must be
+    # alive, otherwise the port responder is someone else's process.
+    if _proc is not None and _proc.poll() is not None:
+        return False
     try:
         r = requests.get("http://localhost:%d/health" % BACKEND_PORT, timeout=3)
         return r.status_code == 200 and r.json().get("status") == "ok"
@@ -73,6 +78,11 @@ def start_backend(alias):
         cmd += [extra]
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = "/kaggle/working:" + env.get("LD_LIBRARY_PATH", "")
+    # Clear any orphan llama-server (e.g. left behind when the old gateway was
+    # killed during a hot-update) so it cannot hold the backend port or VRAM.
+    # Our own proc was already stopped by stop_backend() before this point.
+    subprocess.run(["pkill", "-9", "-f", "llama-server"], capture_output=True)
+    time.sleep(3)
     log("starting backend: " + alias)
     with open("/tmp/llama-backend-stdout.log", "w") as out:
         _proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env,
