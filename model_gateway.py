@@ -124,6 +124,22 @@ def ensure_model(alias):
             return False
         return True
 
+def resolve_alias(name):
+    """Map a requested model name to a configured alias, tolerating the
+    shortened labels the official WebUI sends (e.g. "qwen3.6",
+    "deepseek-v4-pro"). Returns None when nothing matches."""
+    if not name:
+        return None
+    if name in MODEL_CONFIGS:
+        return name
+    n = str(name).lower()
+    hits = []
+    for a in MODEL_CONFIGS:
+        al = a.lower()
+        if al.startswith(n) or n.startswith(al) or n in al or al in n:
+            hits.append(a)
+    return max(hits, key=len) if hits else None
+
 def official_webui_available():
     """True when llama-server serves its built-in WebUI at /."""
     try:
@@ -212,7 +228,12 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/models/unload":
             self._send_json({"success": True})
             return
-        if p.startswith("/v1/") or p.startswith("/completion"):
+        # The official WebUI chats via /chat/completions (NOT /v1/...).
+        # It must go through _forward_api so the requested model is loaded;
+        # _raw_proxy bypassed routing and sent it to whatever model happened
+        # to be in VRAM -> endless "Processing" when they disagreed.
+        if (p.startswith("/v1/") or p.startswith("/completion")
+                or "/completions" in p):
             self._forward_api("POST")
         else:
             self._serve_webui("POST")
@@ -253,12 +274,14 @@ class Handler(BaseHTTPRequestHandler):
                 wanted = json.loads(raw).get("model")
             except Exception:
                 pass
-        if wanted not in MODEL_CONFIGS:
+        alias = resolve_alias(wanted)
+        log("router_load: wanted=%s -> alias=%s (current=%s)" % (wanted, alias, _current))
+        if alias is None:
             self._send_json({"error": {"message": "unknown model: " + str(wanted),
                                        "type": "invalid_request_error"}}, 404)
             return
-        if ensure_model(wanted):
-            self._send_json({"success": True, "model": wanted})
+        if ensure_model(alias):
+            self._send_json({"success": True, "model": alias})
         else:
             self._send_json({"error": {"message": "failed to load " + wanted,
                                        "type": "server_error"}}, 500)
@@ -322,13 +345,28 @@ class Handler(BaseHTTPRequestHandler):
                 wanted = json.loads(body).get("model")
             except Exception:
                 pass
-        alias = wanted if wanted in MODEL_CONFIGS else (DEFAULT_MODEL if wanted is None else None)
+        alias = resolve_alias(wanted)
         if alias is None:
-            self._send_json({"error": {"message": "Unknown model: " + str(wanted),
-                                       "type": "invalid_request_error"}}, 400)
-            return
+            # A native /completion request carries no model field. Keep the
+            # model that is ALREADY loaded instead of forcing DEFAULT_MODEL:
+            # forcing it switched the model on every WebUI message and killed
+            # the in-flight request (502 / 524 / endless "Processing").
+            alias = _current if _current in MODEL_CONFIGS else DEFAULT_MODEL
+        log("api %s %s model=%s -> %s (current=%s)" %
+            (method, self.path, wanted, alias, _current))
+        # The backend is a SINGLE-model llama-server keyed by --alias. Rewrite
+        # the WebUI's short/foreign model name to the canonical alias so the
+        # backend never rejects or hangs on an unknown model id.
+        if body and wanted is not None:
+            try:
+                _b = json.loads(body)
+                if isinstance(_b, dict) and "model" in _b:
+                    _b["model"] = alias
+                    body = json.dumps(_b, ensure_ascii=False).encode("utf-8")
+            except Exception:
+                pass
         if not ensure_model(alias):
-            self._send_json({"error": {"message": "Failed to load model " + alias,
+            self._send_json({"error": {"message": "Failed to load model " + str(alias),
                                        "type": "server_error"}}, 500)
             return
         url = "http://localhost:%d%s" % (BACKEND_PORT, self.path)
